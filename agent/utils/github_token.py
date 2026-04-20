@@ -6,16 +6,12 @@ import logging
 from typing import Any
 
 from langgraph.config import get_config
-from langgraph_sdk import get_client
-from langgraph_sdk.errors import NotFoundError
-
-from ..encryption import decrypt_token
+from ..encryption import decrypt_token, encrypt_token
+from .sandbox_state import get_thread_metadata, update_thread_metadata
 
 logger = logging.getLogger(__name__)
 
 _GITHUB_TOKEN_METADATA_KEY = "github_token_encrypted"
-
-client = get_client()
 
 
 def _read_encrypted_github_token(metadata: dict[str, Any]) -> str | None:
@@ -37,22 +33,19 @@ def get_github_token() -> str | None:
 
 
 async def get_github_token_from_thread(thread_id: str) -> tuple[str | None, str | None]:
-    """Resolve a GitHub token from LangGraph thread metadata.
+    """Resolve a GitHub token from local thread metadata.
 
     Returns:
         A `(token, encrypted_token)` tuple. Either value may be `None`.
     """
-    try:
-        thread = await client.threads.get(thread_id)
-    except NotFoundError:
-        logger.debug("Thread %s not found while looking up GitHub token", thread_id)
-        return None, None
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to fetch thread metadata for %s", thread_id)
-        return None, None
-
-    encrypted_token = _read_encrypted_github_token((thread or {}).get("metadata", {}))
+    encrypted_token = _read_encrypted_github_token(get_thread_metadata(thread_id))
     token = _decrypt_github_token(encrypted_token)
     if token:
         logger.info("Found GitHub token in thread metadata for thread %s", thread_id)
     return token, encrypted_token
+
+
+async def persist_encrypted_github_token(thread_id: str, token: str) -> str:
+    encrypted = encrypt_token(token)
+    update_thread_metadata(thread_id, {_GITHUB_TOKEN_METADATA_KEY: encrypted})
+    return encrypted

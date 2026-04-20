@@ -11,7 +11,6 @@ import httpx
 import jwt
 from langgraph.config import get_config
 from langgraph.graph.state import RunnableConfig
-from langgraph_sdk import get_client
 
 from ..encryption import encrypt_token
 from .github_app import get_github_app_installation_token
@@ -19,10 +18,9 @@ from .github_token import get_github_token_from_thread
 from .github_user_email_map import GITHUB_USER_EMAIL_MAP
 from .linear import comment_on_linear_issue
 from .slack import post_slack_ephemeral_message, post_slack_thread_reply
+from .sandbox_state import update_thread_metadata
 
 logger = logging.getLogger(__name__)
-
-client = get_client()
 
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY_PROD", "")
 LANGSMITH_API_URL = os.environ.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
@@ -268,10 +266,7 @@ async def leave_failure_comment(
 async def persist_encrypted_github_token(thread_id: str, token: str) -> str:
     """Encrypt a GitHub token and store it on the thread metadata."""
     encrypted = encrypt_token(token)
-    await client.threads.update(
-        thread_id=thread_id,
-        metadata={"github_token_encrypted": encrypted},
-    )
+    update_thread_metadata(thread_id, {"github_token_encrypted": encrypted})
     return encrypted
 
 
@@ -376,11 +371,20 @@ async def resolve_github_token(config: RunnableConfig, thread_id: str) -> tuple[
     if is_bot_token_only_mode():
         return await _resolve_bot_installation_token(thread_id)
 
-    configurable = config["configurable"]
+    configurable = config.get("configurable", {})
+    # If token is explicitly provided in the config, use it directly.
+    # This supports local execution modes like ACP/CLI.
+    if "github_token" in configurable and configurable["github_token"]:
+        token = configurable["github_token"]
+        return token, encrypt_token(token)
+
     source = configurable.get("source")
     if not source:
-        logger.error("Missing source for thread %s; cannot route auth failure responses", thread_id)
-        raise RuntimeError(f"GitHub auth failed for thread {thread_id}: missing source")
+        logger.warning(
+            "Missing source for thread %s; falling back to empty GitHub token for ACP/local execution",
+            thread_id,
+        )
+        return "", ""
 
     try:
         if source == "github":

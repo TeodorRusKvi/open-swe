@@ -12,6 +12,9 @@ class EncryptionKeyMissingError(ValueError):
     """Raised when TOKEN_ENCRYPTION_KEY environment variable is not set."""
 
 
+import hashlib
+import base64
+
 def _get_encryption_key() -> bytes:
     """Get or derive the encryption key from environment variable.
 
@@ -22,13 +25,19 @@ def _get_encryption_key() -> bytes:
         32-byte Fernet-compatible key
 
     Raises:
-        EncryptionKeyMissingError: If TOKEN_ENCRYPTION_KEY is not set
+        EncryptionKeyMissingError: If neither TOKEN_ENCRYPTION_KEY nor LANGSMITH_API_KEY is set
     """
     explicit_key = os.environ.get("TOKEN_ENCRYPTION_KEY")
-    if not explicit_key:
+    if explicit_key:
+        return explicit_key.encode()
+
+    langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGSMITH_API_KEY_PROD")
+    if not langsmith_key:
         raise EncryptionKeyMissingError
 
-    return explicit_key.encode()
+    # Derive a stable 32-byte key from the LangSmith API key
+    derived = hashlib.sha256(langsmith_key.encode()).digest()
+    return base64.urlsafe_b64encode(derived)
 
 
 def encrypt_token(token: str) -> str:

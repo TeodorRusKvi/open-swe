@@ -6,12 +6,13 @@
 import logging
 import os
 import warnings
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 from langgraph.graph.state import RunnableConfig
 from langgraph.pregel import Pregel
-from langgraph_sdk import get_client
 
 warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 
@@ -29,7 +30,6 @@ from .integrations.langsmith import _configure_github_proxy
 from .middleware import (
     ToolErrorMiddleware,
     check_message_queue_before_model,
-    ensure_no_empty_msg,
     open_pr_if_needed,
 )
 from .prompt import construct_system_prompt
@@ -63,13 +63,41 @@ from .utils.model import make_model
 from .utils.sandbox import create_sandbox
 from .utils.sandbox_paths import aresolve_sandbox_work_dir
 
-client = get_client()
-
 SANDBOX_CREATING = "__creating__"
 SANDBOX_CREATION_TIMEOUT = 180
 SANDBOX_POLL_INTERVAL = 1.0
+CHECKPOINT_DB_PATH = Path(
+    os.environ.get(
+        "OPEN_SWE_CHECKPOINT_DB",
+        Path(__file__).resolve().parents[4] / ".open_swe_langgraph_checkpoints.sqlite3",
+    )
+)
+CHECKPOINTER_BACKEND = os.environ.get("OPEN_SWE_CHECKPOINTER", "sqlite").strip().lower()
+CHECKPOINTER_ASYNC = os.environ.get("OPEN_SWE_CHECKPOINTER_ASYNC", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+from acp_agent_server.checkpointer import get_checkpointer as get_base_checkpointer
 
-from .utils.sandbox_state import SANDBOX_BACKENDS, get_sandbox_id_from_metadata
+
+async def get_checkpointer():
+    """Return a shared LangGraph checkpointer for the Open SWE agent."""
+    dsn = os.environ.get("OPEN_SWE_CHECKPOINTER_DSN") or os.environ.get("DATABASE_URL")
+    return await get_base_checkpointer(
+        db_path=CHECKPOINT_DB_PATH,
+        backend=CHECKPOINTER_BACKEND,
+        is_async=CHECKPOINTER_ASYNC,
+        dsn=dsn,
+    )
+
+
+from .utils.sandbox_state import (
+    SANDBOX_BACKENDS,
+    get_sandbox_id_from_metadata,
+    update_thread_metadata,
+)
 
 
 async def _create_sandbox_with_proxy() -> SandboxBackendProtocol:
@@ -118,15 +146,12 @@ async def _recreate_sandbox(thread_id: str) -> SandboxBackendProtocol:
     The agent is responsible for cloning repos via tools.
     """
     SANDBOX_BACKENDS.pop(thread_id, None)
-    await client.threads.update(
-        thread_id=thread_id,
-        metadata={"sandbox_id": SANDBOX_CREATING},
-    )
+    update_thread_metadata(thread_id, {"sandbox_id": SANDBOX_CREATING})
     try:
         sandbox_backend = await _create_sandbox_with_proxy()
     except Exception:
         logger.exception("Failed to recreate sandbox after connection failure")
-        await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
+        update_thread_metadata(thread_id, {"sandbox_id": None})
         raise
     return sandbox_backend
 
@@ -183,8 +208,96 @@ def graph_loaded_for_execution(config: RunnableConfig) -> bool:
     )
 
 
-DEFAULT_LLM_MODEL_ID = "anthropic:claude-opus-4-6"
+DEFAULT_LLM_MODEL_ID = "openai:gpt-4o"
 DEFAULT_RECURSION_LIMIT = 1_000
+ASK_BEFORE_EDITS_MODE = "ask_before_edits"
+
+
+async def get_thread_messages(agent: Pregel, thread_id: str) -> list[Any]:
+    """Read all messages for a thread by traversing the full history.
+    """
+    from acp_agent_server import BaseAgentServer
+    from acp_agent_server.context import ACPSessionContext
+
+    class DummyServer(BaseAgentServer):
+        async def build_agent(self, context: ACPSessionContext, for_execution: bool = True) -> Pregel:
+            return agent
+
+    server = DummyServer()
+    server._agents[thread_id] = agent
+    return await server.get_all_messages(thread_id)
+
+
+def _build_interrupt_policy(mode: str) -> dict[str, Any] | None:
+    if mode != ASK_BEFORE_EDITS_MODE:
+        return None
+    return {
+        "write_file": True,
+        "edit_file": True,
+        "delete_file": True,
+    }
+
+
+
+
+async def rewind_thread_to_message_id(agent: Pregel, thread_id: str, message_id: str) -> str:
+    """Destructive rewind in the current thread."""
+    checkpoint_id = await resolve_checkpoint_id(agent, thread_id, message_id)
+    update_thread_metadata(thread_id, {"checkpoint_id": checkpoint_id})
+    return message_id
+
+
+async def resolve_checkpoint_id(agent: Pregel, thread_id: str, target: str) -> str:
+    """Resolve a message ID or ordinal to the checkpoint AFTER that message."""
+    res = await _resolve_checkpoint_info(agent, thread_id, target)
+    return res["checkpoint_id"]
+
+
+async def resolve_parent_checkpoint_id(agent: Pregel, thread_id: str, target: str) -> str:
+    """Resolve a message ID or ordinal to the checkpoint BEFORE that message."""
+    res = await _resolve_checkpoint_info(agent, thread_id, target)
+    parent = res.get("parent_checkpoint_id")
+    if parent is None:
+        # If no parent, it might be the first message, so we return the empty START state
+        return "" 
+    return parent
+
+
+async def _resolve_checkpoint_info(agent: Pregel, thread_id: str, target: str) -> dict[str, Any]:
+    """Internal helper to find checkpoint and its parent."""
+    if not target.strip():
+        raise ValueError("Target ID must not be empty")
+
+    all_snapshots = []
+    async for snapshot in agent.aget_state_history({"configurable": {"thread_id": thread_id}}):
+        all_snapshots.append(snapshot)
+
+    # Ordinal lookup (1-based)
+    if target.isdigit():
+        idx = int(target)
+        user_msg_count = 0
+        for snapshot in reversed(all_snapshots):
+            messages = (getattr(snapshot, "values", None) or {}).get("messages", [])
+            if messages and getattr(messages[-1], "type", None) == "human":
+                user_msg_count += 1
+                if user_msg_count == idx:
+                    return {
+                        "checkpoint_id": snapshot.config["configurable"]["checkpoint_id"],
+                        "parent_checkpoint_id": snapshot.parent_config["configurable"].get("checkpoint_id") if snapshot.parent_config else None
+                    }
+
+    # ID lookup
+    # We want the EARLIEST snapshot that contains this message ID
+    for snapshot in reversed(all_snapshots): # Search from oldest to newest
+        messages = (getattr(snapshot, "values", None) or {}).get("messages", [])
+        for msg in messages:
+            if getattr(msg, "id", None) == target:
+                return {
+                    "checkpoint_id": snapshot.config["configurable"]["checkpoint_id"],
+                    "parent_checkpoint_id": snapshot.parent_config["configurable"].get("checkpoint_id") if snapshot.parent_config else None
+                }
+
+    raise ValueError(f"Could not resolve '{target}' in session {thread_id}")
 
 
 async def get_agent(config: RunnableConfig) -> Pregel:
@@ -198,6 +311,7 @@ async def get_agent(config: RunnableConfig) -> Pregel:
         return create_deep_agent(
             system_prompt="",
             tools=[],
+            checkpointer=await get_checkpointer(),
         ).with_config(config)
 
     github_token, new_encrypted = await resolve_github_token(config, thread_id)
@@ -217,7 +331,7 @@ async def get_agent(config: RunnableConfig) -> Pregel:
 
     elif sandbox_id is None:
         logger.info("Creating new sandbox for thread %s", thread_id)
-        await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": SANDBOX_CREATING})
+        update_thread_metadata(thread_id, {"sandbox_id": SANDBOX_CREATING})
 
         try:
             sandbox_backend = await _create_sandbox_with_proxy()
@@ -225,7 +339,7 @@ async def get_agent(config: RunnableConfig) -> Pregel:
         except Exception:
             logger.exception("Failed to create sandbox")
             try:
-                await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
+                update_thread_metadata(thread_id, {"sandbox_id": None})
                 logger.info("Reset sandbox_id to None for thread %s", thread_id)
             except Exception:
                 logger.exception("Failed to reset sandbox_id metadata")
@@ -238,17 +352,14 @@ async def get_agent(config: RunnableConfig) -> Pregel:
         except Exception:
             logger.warning("Failed to connect to existing sandbox %s, creating new one", sandbox_id)
             # Reset sandbox_id and create a new sandbox with proxy auth configured
-            await client.threads.update(
-                thread_id=thread_id,
-                metadata={"sandbox_id": SANDBOX_CREATING},
-            )
+            update_thread_metadata(thread_id, {"sandbox_id": SANDBOX_CREATING})
 
             try:
                 sandbox_backend = await _create_sandbox_with_proxy()
                 logger.info("New sandbox created: %s", sandbox_backend.id)
             except Exception:
                 logger.exception("Failed to create replacement sandbox")
-                await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
+                update_thread_metadata(thread_id, {"sandbox_id": None})
                 raise
 
         await _refresh_github_proxy(sandbox_backend)
@@ -257,10 +368,7 @@ async def get_agent(config: RunnableConfig) -> Pregel:
     SANDBOX_BACKENDS[thread_id] = sandbox_backend
 
     if sandbox_id != sandbox_backend.id:
-        await client.threads.update(
-            thread_id=thread_id,
-            metadata={"sandbox_id": sandbox_backend.id},
-        )
+        update_thread_metadata(thread_id, {"sandbox_id": sandbox_backend.id})
 
         await asyncio.to_thread(
             sandbox_backend.execute,
@@ -272,6 +380,8 @@ async def get_agent(config: RunnableConfig) -> Pregel:
     linear_issue_number = linear_issue.get("linear_issue_number", "")
 
     work_dir = await aresolve_sandbox_work_dir(sandbox_backend)
+
+    mode = config["configurable"].get("mode", ASK_BEFORE_EDITS_MODE)
 
     logger.info("Returning agent with sandbox for thread %s", thread_id)
     return create_deep_agent(
@@ -307,12 +417,14 @@ async def get_agent(config: RunnableConfig) -> Pregel:
             dismiss_pr_review,
             submit_pr_review,
             list_pr_review_comments,
-        ],
+        ]
+        + config["configurable"].get("extra_tools", []),
         backend=sandbox_backend,
+        checkpointer=await get_checkpointer(),
+        interrupt_on=_build_interrupt_policy(mode),
         middleware=[
             ToolErrorMiddleware(),
             check_message_queue_before_model,
-            ensure_no_empty_msg,
             open_pr_if_needed,
         ],
     ).with_config(config)

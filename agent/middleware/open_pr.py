@@ -16,14 +16,14 @@ from langchain.agents.middleware import AgentState, after_agent
 from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
-from ..utils.authorship import (
+from agent.utils.authorship import (
     OPEN_SWE_BOT_EMAIL,
     OPEN_SWE_BOT_NAME,
     add_pr_collaboration_note,
     add_user_coauthor_trailer,
     resolve_triggering_user_identity,
 )
-from ..utils.github import (
+from agent.utils.github import (
     create_github_pr,
     get_github_default_branch,
     git_add_all,
@@ -37,10 +37,10 @@ from ..utils.github import (
     git_has_unpushed_commits,
     git_push,
 )
-from ..utils.github_app import get_github_app_installation_token
-from ..utils.github_token import get_github_token
-from ..utils.sandbox_paths import aresolve_repo_dir
-from ..utils.sandbox_state import get_sandbox_backend
+from agent.utils.github_app import get_github_app_installation_token
+from agent.utils.github_token import get_github_token
+from agent.utils.sandbox_paths import aresolve_repo_dir
+from agent.utils.sandbox_state import get_sandbox_backend
 
 logger = logging.getLogger(__name__)
 

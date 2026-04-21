@@ -13,7 +13,7 @@ from typing import Any
 
 from langgraph.config import get_config
 
-from .sandbox import create_sandbox
+from agent.utils.sandbox import create_sandbox
 
 logger = logging.getLogger(__name__)
 

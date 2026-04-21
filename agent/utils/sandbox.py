@@ -1,20 +1,5 @@
 import os
 
-from agent.integrations.daytona import create_daytona_sandbox
-from agent.integrations.langsmith import create_langsmith_sandbox
-from agent.integrations.local import create_local_sandbox
-from agent.integrations.modal import create_modal_sandbox
-from agent.integrations.runloop import create_runloop_sandbox
-
-SANDBOX_FACTORIES = {
-    "langsmith": create_langsmith_sandbox,
-    "daytona": create_daytona_sandbox,
-    "modal": create_modal_sandbox,
-    "runloop": create_runloop_sandbox,
-    "local": create_local_sandbox,
-}
-
-
 def create_sandbox(sandbox_id: str | None = None):
     """Create or reconnect to a sandbox using the configured provider.
 
@@ -28,8 +13,22 @@ def create_sandbox(sandbox_id: str | None = None):
         A sandbox backend implementing SandboxBackendProtocol.
     """
     sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
-    factory = SANDBOX_FACTORIES.get(sandbox_type)
-    if not factory:
-        supported = ", ".join(sorted(SANDBOX_FACTORIES))
+    
+    if sandbox_type == "langsmith":
+        from agent.integrations.langsmith import create_langsmith_sandbox
+        return create_langsmith_sandbox(sandbox_id)
+    elif sandbox_type == "daytona":
+        from agent.integrations.daytona import create_daytona_sandbox
+        return create_daytona_sandbox(sandbox_id)
+    elif sandbox_type == "modal":
+        from agent.integrations.modal import create_modal_sandbox
+        return create_modal_sandbox(sandbox_id)
+    elif sandbox_type == "runloop":
+        from agent.integrations.runloop import create_runloop_sandbox
+        return create_runloop_sandbox(sandbox_id)
+    elif sandbox_type == "local":
+        from agent.integrations.local import create_local_sandbox
+        return create_local_sandbox(sandbox_id)
+    else:
+        supported = "langsmith, daytona, modal, runloop, local"
         raise ValueError(f"Invalid sandbox type: {sandbox_type}. Supported types: {supported}")
-    return factory(sandbox_id)

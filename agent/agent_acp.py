@@ -56,6 +56,7 @@ from agent.utils.sandbox_state import (
     get_thread_metadata,
 )
 
+
 def infer_repo_from_cwd(cwd: str) -> dict[str, str]:
     """Try to infer GitHub repo owner/name from git remote."""
     try:
@@ -88,7 +89,8 @@ class OpenSWEAgentServer(BaseAgentServer):
         self, context: ACPSessionContext, for_execution: bool = True
     ) -> CompiledStateGraph:
         """Build the Open SWE agent graph for the current ACP session."""
-        logger.info(f"DEBUG: build_agent called for session {context.session_id}")
+        session_id = getattr(context, "session_id", None)
+        logger.info(f"DEBUG: build_agent called for session {session_id}")
         try:
             from agent import server
 
@@ -143,14 +145,14 @@ class OpenSWEAgentServer(BaseAgentServer):
 
             config: RunnableConfig = {
                 "configurable": {
-                    "thread_id": context.session_id or str(uuid4()),
+                    "thread_id": session_id or str(uuid4()),
                     "mode": context.mode,
                     "github_token": os.environ.get("GITHUB_TOKEN"),
                     "__is_for_execution__": for_execution,
                     "extra_tools": mcp_tools,
                 },
                 "metadata": {
-                    "user_id": context.user_id,
+                    "user_id": getattr(context, "user_id", "default_user"),
                     "repo_owner": repo_info["owner"],
                     "repo_name": repo_info["name"],
                 },

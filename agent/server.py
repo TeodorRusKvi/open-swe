@@ -26,14 +26,14 @@ from deepagents import create_deep_agent
 from deepagents.backends.protocol import SandboxBackendProtocol
 from langsmith.sandbox import SandboxClientError
 
-from .integrations.langsmith import _configure_github_proxy
-from .middleware import (
+from agent.integrations.langsmith import _configure_github_proxy
+from agent.middleware import (
     ToolErrorMiddleware,
     check_message_queue_before_model,
     open_pr_if_needed,
 )
-from .prompt import construct_system_prompt
-from .tools import (
+from agent.prompt import construct_system_prompt
+from agent.tools import (
     commit_and_open_pr,
     create_pr_review,
     dismiss_pr_review,
@@ -57,11 +57,11 @@ from .tools import (
     update_pr_review,
     web_search,
 )
-from .utils.auth import resolve_github_token
-from .utils.github_app import get_github_app_installation_token
-from .utils.model import make_model
-from .utils.sandbox import create_sandbox
-from .utils.sandbox_paths import aresolve_sandbox_work_dir
+from agent.utils.auth import resolve_github_token
+from agent.utils.github_app import get_github_app_installation_token
+from agent.utils.model import make_model
+from agent.utils.sandbox import create_sandbox
+from agent.utils.sandbox_paths import aresolve_sandbox_work_dir
 
 SANDBOX_CREATING = "__creating__"
 SANDBOX_CREATION_TIMEOUT = 180
@@ -93,7 +93,7 @@ async def get_checkpointer():
     )
 
 
-from .utils.sandbox_state import (
+from agent.utils.sandbox_state import (
     SANDBOX_BACKENDS,
     get_sandbox_id_from_metadata,
     update_thread_metadata,

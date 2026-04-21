@@ -15,7 +15,7 @@ from langchain.agents.middleware import AgentState, before_model
 from langgraph.config import get_config, get_store
 from langgraph.runtime import Runtime
 
-from ..utils.multimodal import fetch_image_block
+from agent.utils.multimodal import fetch_image_block
 
 logger = logging.getLogger(__name__)
 

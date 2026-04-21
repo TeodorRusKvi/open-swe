@@ -107,7 +107,18 @@ def create_langsmith_sandbox(
         template=template_name,
         template_image=template_image,
     )
-    _update_thread_sandbox_metadata(backend.id)
+    
+    # Use local state for ACP execution
+    from agent.utils.sandbox_state import update_thread_metadata
+    from langgraph.config import get_config
+    
+    try:
+        config = get_config()
+        thread_id = config.get("configurable", {}).get("thread_id")
+        if thread_id:
+            update_thread_metadata(thread_id, {"sandbox_id": backend.id})
+    except Exception:
+        pass
 
     if sandbox_id is None and github_token:
         _configure_github_proxy(backend.id, github_token)
@@ -116,33 +127,8 @@ def create_langsmith_sandbox(
 
 
 def _update_thread_sandbox_metadata(sandbox_id: str) -> None:
-    """Update thread metadata with sandbox_id."""
-    try:
-        import asyncio
-
-        from langgraph.config import get_config
-        from langgraph_sdk import get_client
-
-        config = get_config()
-        thread_id = config.get("configurable", {}).get("thread_id")
-        if not thread_id:
-            return
-        client = get_client()
-
-        async def _update() -> None:
-            await client.threads.update(
-                thread_id=thread_id,
-                metadata={"sandbox_id": sandbox_id},
-            )
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(_update())
-        else:
-            loop.create_task(_update())
-    except Exception:
-        pass
+    """Legacy helper, now mostly handled inline or via update_thread_metadata directly."""
+    pass
 
 
 class SandboxProvider(ABC):

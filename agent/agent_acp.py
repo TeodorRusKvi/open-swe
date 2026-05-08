@@ -10,14 +10,31 @@ from acp_agent_server import (
     ACPSessionContext,
     load_env_configs,
 )
+
+# Standardized model list for this agent
+AVAILABLE_MODELS = [
+    {
+        "value": "openai:gpt-4o-mini",
+        "name": "GPT-4o Mini",
+        "description": "Fast and efficient for daily tasks",
+    },
+    {
+        "value": "openai:gpt-4o",
+        "name": "GPT-4o",
+        "description": "Powerful reasoning and creativity",
+    },
+    {
+        "value": "anthropic:claude-3-5-sonnet-latest",
+        "name": "Claude 3.5 Sonnet",
+        "description": "Exceptional coding and nuance",
+    },
+]
 from acp_agent_server.launcher import serve_acp_stdio
 from langgraph.graph.state import RunnableConfig
 
-# Setup project paths
-project_root = Path(__file__).parent.parent.absolute()
 
 # Load environment variables using universal utility
-load_env_configs(project_root)
+load_env_configs()
 
 # Default to local sandbox for ACP execution
 if "SANDBOX_TYPE" not in os.environ:
@@ -53,11 +70,12 @@ class OpenSWEAgentServer(BaseAgentServer):
                 "configurable": {
                     "thread_id": session_id,
                     "mode": mode,
+                    "model_id": getattr(context, "model", None),
                     "__is_for_execution__": for_execution,
                 },
                 "metadata": {
                     "user_id": user_id,
-                }
+                },
             }
 
             # Optional: Pass checkpoint_id if present in context (for future fork stability)
@@ -85,5 +103,6 @@ if __name__ == "__main__":
         server_class=OpenSWEAgentServer,
         db_path=os.environ["OPEN_SWE_CHECKPOINT_DB"],
         name="Open SWE Agent",
-        version="1.1.0"
+        version="1.1.0",
+        models=AVAILABLE_MODELS
     )

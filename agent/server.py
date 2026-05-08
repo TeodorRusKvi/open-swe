@@ -386,7 +386,8 @@ async def get_agent(config: RunnableConfig) -> Pregel:
     logger.info("Returning agent with sandbox for thread %s", thread_id)
     return create_deep_agent(
         model=make_model(
-            os.environ.get("LLM_MODEL_ID", DEFAULT_LLM_MODEL_ID),
+            config["configurable"].get("model_id")
+            or os.environ.get("LLM_MODEL_ID", DEFAULT_LLM_MODEL_ID),
             max_tokens=20_000,
         ),
         system_prompt=construct_system_prompt(
